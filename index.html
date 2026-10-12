@@ -1,1 +1,157 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>love</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { max-width: 100vw; max-height: 100vh; width: auto; height: auto; display: none; }
+  #msg { position: fixed; left: 0; right: 0; top: 50%; transform: translateY(-50%); text-align: center; color: #888; font: 15px system-ui, sans-serif; padding: 0 20px; }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div id="msg"></div>
 
+<script>
+(function () {
+  // ---- Ayarlar (istersen buradan değiştir) ----
+  var IMAGE = 'resim1.png';   // yüzü çıkarılacak resim, index.html ile aynı klasörde
+  var TEXT = 'love';          // yüzü oluşturan yazı
+  var COLS = 150;             // detay: yüksek = daha net, daha yavaş
+  var CONTRAST = 1.1;
+  var GAMMA = 0.55;           // düşük = daha aydınlık
+  var DURATION = 20;          // saniye: ortadan her yere yayılma süresi
+  // ---------------------------------------------
+
+  var cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+  var msg = document.getElementById('msg');
+  var FS = 12, CW = FS * 0.6, CH = FS, SCALE = 2;
+  var cells = [], W = 0, H = 0, anim = null;
+
+  function clamp(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
+
+  function shrink(img, w, h) {
+    var src = img, sw = img.width, sh = img.height;
+    while (sw > w * 2) {
+      var nw = Math.max(w, Math.floor(sw / 2)), nh = Math.max(h, Math.floor(sh / 2));
+      var t = document.createElement('canvas');
+      t.width = nw; t.height = nh;
+      var tc = t.getContext('2d');
+      tc.imageSmoothingQuality = 'high';
+      tc.drawImage(src, 0, 0, nw, nh);
+      src = t; sw = nw; sh = nh;
+    }
+    var f = document.createElement('canvas');
+    f.width = w; f.height = h;
+    var fc = f.getContext('2d', { willReadFrequently: true });
+    fc.imageSmoothingQuality = 'high';
+    fc.drawImage(src, 0, 0, w, h);
+    return fc.getImageData(0, 0, w, h).data;
+  }
+
+  function build(img) {
+    var cols = COLS;
+    var rows = Math.max(8, Math.round(cols * (img.height / img.width) * (CW / CH)));
+    var data = shrink(img, cols, rows);
+
+    var lums = [];
+    for (var q = 0; q < data.length; q += 4) {
+      lums.push((0.299 * data[q] + 0.587 * data[q + 1] + 0.114 * data[q + 2]) / 255);
+    }
+    lums.sort(function (a, b) { return a - b; });
+    var lo = lums[Math.floor(lums.length * 0.02)];
+    var hi = lums[Math.floor(lums.length * 0.98)];
+    var span = Math.max(hi - lo, 0.05);
+
+    var chars = TEXT.replace(/\s+/g, '').split('');
+    if (!chars.length) chars = ['x'];
+    var ti = 0;
+
+    cells = [];
+    for (var y = 0; y < rows; y++) {
+      for (var x = 0; x < cols; x++) {
+        var i = (y * cols + x) * 4;
+        var r = data[i], g = data[i + 1], b = data[i + 2];
+        var l0 = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+        var l = clamp((l0 - lo) / span);
+        l = clamp((Math.pow(l, GAMMA) - 0.5) * CONTRAST + 0.5);
+        var alpha = 0.12 + 0.88 * l;
+        var k = Math.min(4, (0.25 + 0.75 * l) / Math.max(l0, 0.04));
+        cells.push({
+          x: x * CW, y: y * CH, ch: chars[ti % chars.length],
+          c: 'rgba(' + Math.min(255, r * k | 0) + ',' + Math.min(255, g * k | 0) + ',' + Math.min(255, b * k | 0) + ',' + alpha.toFixed(2) + ')'
+        });
+        ti++;
+      }
+    }
+
+    W = Math.ceil(cols * CW); H = Math.ceil(rows * CH);
+    cv.width = W * SCALE; cv.height = H * SCALE;
+    cv.style.display = 'block';
+  }
+
+  function clearBg() {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.setTransform(SCALE, 0, 0, SCALE, 0, 0);
+    ctx.font = FS + 'px "Courier New", monospace';
+    ctx.textBaseline = 'top';
+  }
+
+  function drawRange(list, from, to) {
+    for (var i = from; i < to; i++) {
+      var c = list[i];
+      ctx.fillStyle = c.c;
+      ctx.fillText(c.ch, c.x, c.y);
+    }
+  }
+
+  function play() {
+    if (anim) cancelAnimationFrame(anim);
+    clearBg();
+    var cx = W / 2, cy = H / 2;
+    var order = cells.map(function (c) {
+      var dx = c.x - cx, dy = c.y - cy;
+      return { c: c, d: Math.sqrt(dx * dx + dy * dy) * (0.9 + Math.random() * 0.2) };
+    });
+    order.sort(function (a, b) { return a.d - b.d; });
+    order = order.map(function (o) { return o.c; });
+
+    var total = order.length, drawn = 0, t0 = null;
+    function frame(t) {
+      if (t0 === null) t0 = t;
+      var p = Math.min(1, (t - t0) / (DURATION * 1000));
+      var target = Math.floor(total * Math.pow(p, 1.5));
+      if (target > drawn) { drawRange(order, drawn, target); drawn = target; }
+      if (p < 1) anim = requestAnimationFrame(frame);
+      else { drawRange(order, drawn, total); anim = null; }
+    }
+    anim = requestAnimationFrame(frame);
+  }
+
+  var img = new Image();
+  img.onload = function () {
+    try {
+      build(img);
+    } catch (e) {
+      msg.textContent = 'Siteyi dosyadan değil, GitHub Pages adresinden aç.';
+      return;
+    }
+    msg.textContent = '';
+    play();
+  };
+  img.onerror = function () {
+    msg.textContent = IMAGE + ' bulunamadı. Dosya adı tam olarak ' + IMAGE + ' olmalı ve index.html ile aynı klasörde durmalı.';
+  };
+  img.src = IMAGE + '?v=' + Date.now();
+
+  // Ekrana dokununca animasyon baştan oynar
+  document.body.addEventListener('click', function () { if (cells.length) play(); });
+})();
+</script>
+</body>
+</html>
